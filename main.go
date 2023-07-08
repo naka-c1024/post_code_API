@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
+	"strconv"
 )
 
 type RespGeoAPI struct {
@@ -33,12 +35,12 @@ func step1(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "This is step1!\n")
 }
 
-func commonPrefix(slices []string) string {
+func commonPrefix(towns []string) string {
 	// 最短の文字列を探す
-	shortest := slices[0]
-	for _, slice := range slices {
-		if len(slice) < len(shortest) {
-			shortest = slice
+	shortest := towns[0]
+	for _, town := range towns {
+		if len(town) < len(shortest) {
+			shortest = town
 		}
 	}
 
@@ -46,10 +48,11 @@ func commonPrefix(slices []string) string {
 	shortestRunes := []rune(shortest)
 	commonPrefix := ""
 
+	// 1文字ずつ比較
 	for i := 0; i < len(shortestRunes); i++ {
-		for _, slice := range slices {
-			// 共通部分を探す
-			if shortestRunes[i] != []rune(slice)[i] {
+		for _, town := range towns {
+			// ひとつでも違う文字があれば共通ではなくなるのでreturn
+			if shortestRunes[i] != []rune(town)[i] {
 				return commonPrefix
 			}
 		}
@@ -82,25 +85,48 @@ func address(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// jsonオブジェクトをjson文字列に変換
-	// bytes, err := json.Marshal(rga)
-	// if err != nil {
-	// 	fmt.Fprintf(w, "json.Marshal error: %v\n", err)
-	// 	return
-	// }
-	// fmt.Fprintln(w, string(bytes))
-
 	var ai AddressInfo
+
+	// リクエストパラメータで与えた郵便番号
 	ai.PostalCode = rga.Response.Location[0].Postal
+
+	// 該当する地域の数
 	ai.HitCount = len(rga.Response.Location)
 
+	// Geo APIから取得した各住所のうち、共通する部分の住所
 	towns := make([]string, ai.HitCount)
 	for i, v := range rga.Response.Location {
 		towns[i] = v.Town
 	}
 	ai.Address = rga.Response.Location[0].Prefecture + rga.Response.Location[0].City + commonPrefix(towns)
 
-	ai.TokyoStaDistance = 0.0
+	// Geo APIから取得した各住所のうち、東京駅から最も離れている地域から東京駅までの距離 [km]
+	const tokyoX = 139.7673068 // 東京駅の緯度
+	const tokyoY = 35.6809591  // 東京駅の経度
+	const earthRadius = 6371.0 // 地球の半径 [km]
+	farthestDistance := 0.0
+	for i := 0; i < ai.HitCount; i++ {
+		x, err := strconv.ParseFloat(rga.Response.Location[i].X, 64)
+		if err != nil {
+			fmt.Fprintf(w, "strconv.ParseFloat error: %v\n", err)
+			return
+		}
+		y, err := strconv.ParseFloat(rga.Response.Location[i].Y, 64)
+		if err != nil {
+			fmt.Fprintf(w, "strconv.ParseFloat error: %v\n", err)
+			return
+		}
+
+		distance := math.Pi * earthRadius / 180 * math.Sqrt(math.Pow((x-tokyoX)*math.Cos(math.Pi*(y+tokyoY)/360), 2)+math.Pow(y-tokyoY, 2))
+		if distance > farthestDistance {
+			farthestDistance = distance
+		}
+	}
+
+	// 四捨五入
+	const baseNumber = 10 // ⼩数点第⼀位まで
+	farthestDistance = math.Round(farthestDistance*baseNumber) / baseNumber
+	ai.TokyoStaDistance = farthestDistance
 
 	// jsonオブジェクトをjson文字列に変換
 	bytes, err := json.Marshal(ai)
