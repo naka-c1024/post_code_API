@@ -14,7 +14,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
-type RespGeoAPI struct {
+type GeoAPIResponse struct {
 	Response struct {
 		Location []struct {
 			City       string `json:"city"`
@@ -36,8 +36,8 @@ type AddressInfo struct {
 	TokyoStaDistance float64 `json:"tokyo_sta_distance"`
 }
 
-func step1(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "This is step1!\n")
+func rootHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintf(w, "This is root!\n")
 }
 
 func commonPrefix(towns []string) string {
@@ -83,61 +83,25 @@ func insertPostalCode(postalCode string) error {
 	return nil
 }
 
-func addressHandler(w http.ResponseWriter, r *http.Request) {
-	postalCode := r.FormValue("postal_code")
-	if postalCode == "" {
-		fmt.Fprintf(w, "Enter postal_code\n")
-		return
-	}
-
-	url := "https://geoapi.heartrails.com/api/json?method=searchByPostal&postal=" + postalCode
-	resp, err := http.Get(url)
-	if err != nil {
-		fmt.Fprintf(w, "http.Get error: %v\n", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	// jsonオブジェクトにデコード
-	var rga RespGeoAPI
-	dec := json.NewDecoder(resp.Body)
-	if err := dec.Decode(&rga); err != nil {
-		fmt.Fprintf(w, "json.Decode error: %v\n", err)
-		return
-	}
-
-	var ai AddressInfo
-
-	// リクエストパラメータで与えた郵便番号
-	ai.PostalCode = rga.Response.Location[0].Postal
-
-	// 該当する地域の数
-	ai.HitCount = len(rga.Response.Location)
-
-	// Geo APIから取得した各住所のうち、共通する部分の住所
-	towns := make([]string, ai.HitCount)
-	for i, v := range rga.Response.Location {
-		towns[i] = v.Town
-	}
-	ai.Address = rga.Response.Location[0].Prefecture + rga.Response.Location[0].City + commonPrefix(towns)
-
-	// Geo APIから取得した各住所のうち、東京駅から最も離れている地域から東京駅までの距離 [km]
+// Geo APIから取得した各住所のうち、東京駅から最も離れている地域から東京駅までの距離 [km]を計算
+func calcTokyoStaDistance(addressData AddressInfo, geoData GeoAPIResponse) (float64, error) {
 	const tokyoX = 139.7673068 // 東京駅の緯度
 	const tokyoY = 35.6809591  // 東京駅の経度
 	const earthRadius = 6371.0 // 地球の半径 [km]
+
 	farthestDistance := 0.0
-	for i := 0; i < ai.HitCount; i++ {
-		x, err := strconv.ParseFloat(rga.Response.Location[i].X, 64)
+	for i := 0; i < addressData.HitCount; i++ {
+		// Geo APIから取得した各住所の緯度・経度をfloat64に変換
+		x, err := strconv.ParseFloat(geoData.Response.Location[i].X, 64)
 		if err != nil {
-			fmt.Fprintf(w, "strconv.ParseFloat error: %v\n", err)
-			return
+			return farthestDistance, err
 		}
-		y, err := strconv.ParseFloat(rga.Response.Location[i].Y, 64)
+		y, err := strconv.ParseFloat(geoData.Response.Location[i].Y, 64)
 		if err != nil {
-			fmt.Fprintf(w, "strconv.ParseFloat error: %v\n", err)
-			return
+			return farthestDistance, err
 		}
 
+		// 2点間の距離を計算
 		distance := math.Pi * earthRadius / 180 * math.Sqrt(math.Pow((x-tokyoX)*math.Cos(math.Pi*(y+tokyoY)/360), 2)+math.Pow(y-tokyoY, 2))
 		if distance > farthestDistance {
 			farthestDistance = distance
@@ -147,20 +111,91 @@ func addressHandler(w http.ResponseWriter, r *http.Request) {
 	// 四捨五入
 	const baseNumber = 10 // ⼩数点第⼀位まで
 	farthestDistance = math.Round(farthestDistance*baseNumber) / baseNumber
-	ai.TokyoStaDistance = farthestDistance
 
-	// jsonオブジェクトをjson文字列に変換
-	bytes, err := json.Marshal(ai)
+	return farthestDistance, nil
+}
+
+func makeAddressData(geoData GeoAPIResponse) (AddressInfo, error) {
+	var addressData AddressInfo
+
+	// リクエストパラメータで与えた郵便番号
+	addressData.PostalCode = geoData.Response.Location[0].Postal
+
+	// 該当する地域の数
+	addressData.HitCount = len(geoData.Response.Location)
+
+	// Geo APIから取得した各住所のうち、共通する部分の住所
+	towns := make([]string, addressData.HitCount)
+	for i, v := range geoData.Response.Location {
+		towns[i] = v.Town
+	}
+	addressData.Address = geoData.Response.Location[0].Prefecture + geoData.Response.Location[0].City + commonPrefix(towns)
+
+	// Geo APIから取得した各住所のうち、東京駅から最も離れている地域から東京駅までの距離 [km]を計算
+	tokyoStaDistance, err := calcTokyoStaDistance(addressData, geoData)
 	if err != nil {
-		fmt.Fprintf(w, "json.Marshal error: %v\n", err)
+		return addressData, err
+	}
+	addressData.TokyoStaDistance = tokyoStaDistance
+
+	return addressData, nil
+}
+
+func fetchGeoData(postalCode string) (GeoAPIResponse, error, int) {
+	var geoData GeoAPIResponse
+
+	// Geo APIにリクエスト
+	url := "https://geoapi.heartrails.com/api/json?method=searchByPostal&postal=" + postalCode
+	resp, err := http.Get(url)
+	if err != nil {
+		return geoData, err, http.StatusBadRequest
+	}
+	defer resp.Body.Close()
+
+	// goオブジェクトにデコード
+	dec := json.NewDecoder(resp.Body)
+	if err := dec.Decode(&geoData); err != nil {
+		return geoData, err, http.StatusInternalServerError
+	}
+
+	return geoData, nil, http.StatusOK
+}
+
+func addressHandler(w http.ResponseWriter, r *http.Request) {
+	postalCode := r.FormValue("postal_code")
+	if postalCode == "" {
+		fmt.Fprintf(w, "Enter postal_code\n")
 		return
 	}
 
+	// Geo APIからデータを取得し、goオブジェクトにして格納
+	geoData, err, statusCode := fetchGeoData(postalCode)
+	if err != nil {
+		http.Error(w, err.Error(), statusCode)
+		return
+	}
+
+	// レスポンス用のデータを作成
+	addressData, err := makeAddressData(geoData)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// goオブジェクトをjson文字列に変換
+	bytes, err := json.Marshal(addressData)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// json文字列をレスポンスとして返す
 	fmt.Fprint(w, string(bytes))
 
 	// データベースにアクセスログを保存
 	if err := insertPostalCode(postalCode); err != nil {
-		log.Fatal(err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 }
 
@@ -172,7 +207,6 @@ func init() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// defer DB.Close()
 }
 
 func connectDB(retryCount int) (*sql.DB, error) {
@@ -199,6 +233,7 @@ func connectDB(retryCount int) (*sql.DB, error) {
 
 	// [ユーザ名]:[パスワード]@tcp([ホスト名]:[ポート番号])/[データベース名]?charset=[文字コード]&parseTime=true(time.Timeを扱うため)
 	dataSourceName := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8&parseTime=true", user, password, host, port, database_name)
+
 	return openDB(dataSourceName, retryCount)
 }
 
@@ -223,13 +258,6 @@ func openDB(dataSourceName string, retryCount int) (*sql.DB, error) {
 	return nil, fmt.Errorf("failed to connect to database after %d retries\n", retryCount)
 }
 
-// データベースのテーブルの構造体
-type DBAccessLogs struct {
-	ID         int
-	PostalCode string
-	CreatedAt  time.Time
-}
-
 type AccessLog struct {
 	PostalCode   string `json:"postal_code"`
 	RequestCount int    `json:"request_count"`
@@ -239,10 +267,10 @@ type AccessLogInfo struct {
 	AccessLogs []AccessLog `json:"access_logs"`
 }
 
-func accessLogsHandler(w http.ResponseWriter, r *http.Request) {
+func fetchAccessLogs() (AccessLogInfo, error) {
 	var allAccessLogs AccessLogInfo
 
-	query := `
+	const query = `
 		SELECT
 			postal_code,
 			COUNT(*) AS request_count
@@ -254,36 +282,51 @@ func accessLogsHandler(w http.ResponseWriter, r *http.Request) {
 			request_count DESC
 	`
 
+	// SELECT文の実行
 	rows, err := DB.Query(query)
 	if err != nil {
-		log.Fatal(err)
+		return allAccessLogs, err
 	}
 	defer rows.Close()
 
+	// データベースから取得した値を格納
 	for rows.Next() {
 		currentAccessLog := &AccessLog{}
 		if err := rows.Scan(&currentAccessLog.PostalCode, &currentAccessLog.RequestCount); err != nil {
-			log.Fatal(err)
+			return allAccessLogs, err
 		}
 		allAccessLogs.AccessLogs = append(allAccessLogs.AccessLogs, *currentAccessLog)
 	}
 
 	err = rows.Err()
 	if err != nil {
-		log.Fatal(err)
+		return allAccessLogs, err
 	}
 
-	// jsonオブジェクトをjson文字列に変換
-	bytes, err := json.Marshal(allAccessLogs)
+	return allAccessLogs, nil
+}
+
+func accessLogsHandler(w http.ResponseWriter, r *http.Request) {
+	// データベースからアクセスログを取得
+	allAccessLogs, err := fetchAccessLogs()
 	if err != nil {
-		fmt.Fprintf(w, "json.Marshal error: %v\n", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// goオブジェクトをjson文字列に変換
+	bytes, err := json.Marshal(allAccessLogs)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// json文字列をレスポンスとして返す
 	fmt.Fprint(w, string(bytes))
 }
 
 func main() {
-	http.HandleFunc("/", step1)
+	http.HandleFunc("/", rootHandler)
 	http.HandleFunc("/address", addressHandler)
 	http.HandleFunc("/address/access_logs", accessLogsHandler)
 
