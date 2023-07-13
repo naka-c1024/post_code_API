@@ -1,12 +1,17 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
+	"time"
+
+	_ "github.com/go-sql-driver/mysql"
 )
 
 type RespGeoAPI struct {
@@ -137,7 +142,62 @@ func address(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, string(bytes))
 }
 
+func openDB(dataSourceName string, retryCount int) (*sql.DB, error) {
+	var db *sql.DB
+	var err error
+	for i := 0; i < retryCount; i++ {
+		db, err = sql.Open("mysql", dataSourceName)
+		if err != nil {
+			log.Printf("Could not connect to database: %v", err)
+			time.Sleep(time.Second * 2)
+			continue
+		}
+		err = db.Ping()
+		if err != nil {
+			log.Printf("Could not ping database: %v", err)
+			time.Sleep(time.Second * 2)
+			continue
+		}
+		log.Printf("Successfully connected!")
+		return db, nil
+	}
+	return nil, fmt.Errorf("failed to connect to database after %d retries\n", retryCount)
+}
+
+func connectDB(retryCount int) (*sql.DB, error) {
+	database_name, ok := os.LookupEnv("MYSQL_DATABASE")
+	if !ok {
+		return nil, fmt.Errorf("MYSQL_DATABASE is not set")
+	}
+	user, ok := os.LookupEnv("MYSQL_USER")
+	if !ok {
+		return nil, fmt.Errorf("MYSQL_USER is not set")
+	}
+	password, ok := os.LookupEnv("MYSQL_PASSWORD")
+	if !ok {
+		return nil, fmt.Errorf("MYSQL_PASSWORD is not set")
+	}
+	host, ok := os.LookupEnv("MYSQL_HOST")
+	if !ok {
+		return nil, fmt.Errorf("MYSQL_HOST is not set")
+	}
+	port, ok := os.LookupEnv("MYSQL_PORT")
+	if !ok {
+		return nil, fmt.Errorf("MYSQL_PORT is not set")
+	}
+
+	// [ユーザ名]:[パスワード]@tcp([ホスト名]:[ポート番号])/[データベース名]?charset=[文字コード]&parseTime=true(time.Timeを扱うため)
+	dataSourceName := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8&parseTime=true", user, password, host, port, database_name)
+	return openDB(dataSourceName, retryCount)
+}
+
 func main() {
+	db, err := connectDB(42)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
 	http.HandleFunc("/", step1)
 	http.HandleFunc("/address", address)
 

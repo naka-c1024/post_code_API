@@ -1,2 +1,4 @@
 dev_file.md
 sandbox/
+db/.env
+db/data/

@@ -1,0 +1,22 @@
+version: '3.8'
+services:
+  app: # サービス名
+    build: . # Dockerfileのあるディレクトリを指定する
+    tty: true # コンテナの永続化
+    env_file:
+      - ./db/.env
+    volumes:
+      - ./app:/app
+    depends_on: # appコンテナが起動する前にdbコンテナが起動するようにする、ただしコンテナが出来上がるまでは待ってくれない
+      - db
+    ports:
+      - 8080:8080
+  db:
+    image: mysql:8.0 # mysqlのイメージを指定する
+    env_file:
+      - ./db/.env
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d # 初期化用のSQLを設定する
+      - ./db/data:/var/lib/mysql # MySQLのデータを永続化するために、./db/dataにデータを保存する
+    ports:
+      - 3306:3306
