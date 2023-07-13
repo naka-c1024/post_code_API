@@ -67,11 +67,31 @@ func commonPrefix(towns []string) string {
 	return commonPrefix
 }
 
+func insertPostalCode(postalCode string) error {
+	// INSERT文の準備、SQLインジェクション対策
+	prep, err := DB.Prepare("INSERT INTO access_logs(postal_code) VALUES(?)")
+	if err != nil {
+		return err
+	}
+	defer prep.Close()
+
+	// 値をINSERT文に渡す
+	if _, err = prep.Exec(postalCode); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func address(w http.ResponseWriter, r *http.Request) {
 	postalCode := r.FormValue("postal_code")
 	if postalCode == "" {
 		fmt.Fprintf(w, "Enter postal_code\n")
 		return
+	}
+
+	if err := insertPostalCode(postalCode); err != nil {
+		log.Fatal(err)
 	}
 
 	url := "https://geoapi.heartrails.com/api/json?method=searchByPostal&postal=" + postalCode
@@ -142,26 +162,15 @@ func address(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, string(bytes))
 }
 
-func openDB(dataSourceName string, retryCount int) (*sql.DB, error) {
-	var db *sql.DB
+var DB *sql.DB
+
+func init() {
 	var err error
-	for i := 0; i < retryCount; i++ {
-		db, err = sql.Open("mysql", dataSourceName)
-		if err != nil {
-			log.Printf("Could not connect to database: %v", err)
-			time.Sleep(time.Second * 2)
-			continue
-		}
-		err = db.Ping()
-		if err != nil {
-			log.Printf("Could not ping database: %v", err)
-			time.Sleep(time.Second * 2)
-			continue
-		}
-		log.Printf("Successfully connected!")
-		return db, nil
+	DB, err = connectDB(42)
+	if err != nil {
+		log.Fatal(err)
 	}
-	return nil, fmt.Errorf("failed to connect to database after %d retries\n", retryCount)
+	// defer DB.Close()
 }
 
 func connectDB(retryCount int) (*sql.DB, error) {
@@ -191,13 +200,28 @@ func connectDB(retryCount int) (*sql.DB, error) {
 	return openDB(dataSourceName, retryCount)
 }
 
-func main() {
-	db, err := connectDB(42)
-	if err != nil {
-		log.Fatal(err)
+func openDB(dataSourceName string, retryCount int) (*sql.DB, error) {
+	var err error
+	for i := 0; i < retryCount; i++ {
+		DB, err = sql.Open("mysql", dataSourceName)
+		if err != nil {
+			log.Printf("Could not connect to database: %v", err)
+			time.Sleep(time.Second * 2)
+			continue
+		}
+		err = DB.Ping()
+		if err != nil {
+			log.Printf("Could not ping database: %v", err)
+			time.Sleep(time.Second * 2)
+			continue
+		}
+		log.Printf("Successfully connected!")
+		return DB, nil
 	}
-	defer db.Close()
+	return nil, fmt.Errorf("failed to connect to database after %d retries\n", retryCount)
+}
 
+func main() {
 	http.HandleFunc("/", step1)
 	http.HandleFunc("/address", address)
 
