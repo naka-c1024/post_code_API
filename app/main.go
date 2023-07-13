@@ -83,15 +83,11 @@ func insertPostalCode(postalCode string) error {
 	return nil
 }
 
-func address(w http.ResponseWriter, r *http.Request) {
+func addressHandler(w http.ResponseWriter, r *http.Request) {
 	postalCode := r.FormValue("postal_code")
 	if postalCode == "" {
 		fmt.Fprintf(w, "Enter postal_code\n")
 		return
-	}
-
-	if err := insertPostalCode(postalCode); err != nil {
-		log.Fatal(err)
 	}
 
 	url := "https://geoapi.heartrails.com/api/json?method=searchByPostal&postal=" + postalCode
@@ -159,7 +155,13 @@ func address(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "json.Marshal error: %v\n", err)
 		return
 	}
-	fmt.Fprintln(w, string(bytes))
+
+	fmt.Fprint(w, string(bytes))
+
+	// データベースにアクセスログを保存
+	if err := insertPostalCode(postalCode); err != nil {
+		log.Fatal(err)
+	}
 }
 
 var DB *sql.DB
@@ -221,9 +223,69 @@ func openDB(dataSourceName string, retryCount int) (*sql.DB, error) {
 	return nil, fmt.Errorf("failed to connect to database after %d retries\n", retryCount)
 }
 
+// データベースのテーブルの構造体
+type DBAccessLogs struct {
+	ID         int
+	PostalCode string
+	CreatedAt  time.Time
+}
+
+type AccessLog struct {
+	PostalCode   string `json:"postal_code"`
+	RequestCount int    `json:"request_count"`
+}
+
+type AccessLogInfo struct {
+	AccessLogs []AccessLog `json:"access_logs"`
+}
+
+func accessLogsHandler(w http.ResponseWriter, r *http.Request) {
+	var allAccessLogs AccessLogInfo
+
+	query := `
+		SELECT
+			postal_code,
+			COUNT(*) AS request_count
+		FROM
+			access_logs
+		GROUP BY
+			postal_code
+		ORDER BY
+			request_count DESC
+	`
+
+	rows, err := DB.Query(query)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		currentAccessLog := &AccessLog{}
+		if err := rows.Scan(&currentAccessLog.PostalCode, &currentAccessLog.RequestCount); err != nil {
+			log.Fatal(err)
+		}
+		allAccessLogs.AccessLogs = append(allAccessLogs.AccessLogs, *currentAccessLog)
+	}
+
+	err = rows.Err()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// jsonオブジェクトをjson文字列に変換
+	bytes, err := json.Marshal(allAccessLogs)
+	if err != nil {
+		fmt.Fprintf(w, "json.Marshal error: %v\n", err)
+		return
+	}
+	fmt.Fprint(w, string(bytes))
+}
+
 func main() {
 	http.HandleFunc("/", step1)
-	http.HandleFunc("/address", address)
+	http.HandleFunc("/address", addressHandler)
+	http.HandleFunc("/address/access_logs", accessLogsHandler)
 
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
