@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"post_code_API/model"
@@ -31,7 +32,11 @@ type AddressInfo struct {
 	TokyoStaDistance float64 `json:"tokyo_sta_distance"`
 }
 
-func commonPrefix(towns []string) string {
+func commonPrefix(towns []string) (string, error) {
+	if len(towns) == 0 {
+		return "", fmt.Errorf("towns is empty")
+	}
+
 	// 最短の文字列を探す
 	shortest := towns[0]
 	for _, town := range towns {
@@ -49,13 +54,13 @@ func commonPrefix(towns []string) string {
 		for _, town := range towns {
 			// ひとつでも違う文字があれば共通ではなくなるのでreturn
 			if shortestRunes[i] != []rune(town)[i] {
-				return commonPrefix
+				return commonPrefix, nil
 			}
 		}
 		commonPrefix += string(shortestRunes[i])
 	}
 
-	return commonPrefix
+	return commonPrefix, nil
 }
 
 // Geo APIから取得した各住所のうち、東京駅から最も離れている地域から東京駅までの距離 [km]を計算
@@ -104,7 +109,11 @@ func makeAddressData(geoData GeoAPIResponse) (AddressInfo, error) {
 	for i, v := range geoData.Response.Location {
 		towns[i] = v.Town
 	}
-	addressData.Address = geoData.Response.Location[0].Prefecture + geoData.Response.Location[0].City + commonPrefix(towns)
+	commonTown, err := commonPrefix(towns)
+	if err != nil {
+		return addressData, err
+	}
+	addressData.Address = geoData.Response.Location[0].Prefecture + geoData.Response.Location[0].City + commonTown
 
 	// Geo APIから取得した各住所のうち、東京駅から最も離れている地域から東京駅までの距離 [km]を計算
 	tokyoStaDistance, err := calcTokyoStaDistance(addressData, geoData)
@@ -123,7 +132,7 @@ func fetchGeoData(postalCode string) (GeoAPIResponse, error, int) {
 	url := "https://geoapi.heartrails.com/api/json?method=searchByPostal&postal=" + postalCode
 	resp, err := http.Get(url)
 	if err != nil {
-		return geoData, err, http.StatusBadRequest
+		return geoData, err, resp.StatusCode
 	}
 	defer resp.Body.Close()
 
@@ -137,9 +146,9 @@ func fetchGeoData(postalCode string) (GeoAPIResponse, error, int) {
 }
 
 func AddressHandler(w http.ResponseWriter, r *http.Request) {
-	postalCode := r.FormValue("postal_code")
+	postalCode := r.FormValue("postal_code") // formの例外処理はgeoAPIに任せる
 
-	// Geo APIからデータを取得し、goオブジェクトにして格納、formの例外処理はgeoAPIに任せる
+	// Geo APIからデータを取得し、goオブジェクトにして格納
 	geoData, err, statusCode := fetchGeoData(postalCode)
 	if err != nil {
 		view.ErrorResponse(w, err, statusCode)
