@@ -98,6 +98,10 @@ func calcTokyoStaDistance(addressData AddressInfo, geoData GeoAPIResponse) (floa
 func makeAddressData(geoData GeoAPIResponse) (AddressInfo, error) {
 	var addressData AddressInfo
 
+	if len(geoData.Response.Location) == 0 {
+		return addressData, fmt.Errorf("Location is empty")
+	}
+
 	// リクエストパラメータで与えた郵便番号
 	addressData.PostalCode = geoData.Response.Location[0].Postal
 
@@ -162,11 +166,11 @@ func AddressHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	view.Response(w, addressData)
-
 	// データベースにアクセスログを保存
 	if err := model.InsertPostalCode(postalCode); err != nil {
 		view.ErrorResponse(w, err, http.StatusInternalServerError)
 		return
 	}
+
+	view.Response(w, addressData)
 }
