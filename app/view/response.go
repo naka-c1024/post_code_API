@@ -6,7 +6,7 @@ import (
 	"net/http"
 )
 
-func Response(w http.ResponseWriter, data interface{}) {
+func Response(w http.ResponseWriter, data any) {
 	// goオブジェクトをjson文字列に変換
 	bytes, err := json.Marshal(data)
 	if err != nil {
