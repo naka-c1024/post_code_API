@@ -98,8 +98,9 @@ func calcTokyoStaDistance(addressData AddressInfo, geoData GeoAPIResponse) (floa
 func makeAddressData(geoData GeoAPIResponse) (AddressInfo, error) {
 	var addressData AddressInfo
 
+	// 7桁の数字だったが、存在しない郵便番号の場合
 	if len(geoData.Response.Location) == 0 {
-		return addressData, fmt.Errorf("Location is empty")
+		return addressData, fmt.Errorf("postal_code is invalid")
 	}
 
 	// リクエストパラメータで与えた郵便番号
@@ -135,7 +136,7 @@ func fetchGeoData(postalCode string) (GeoAPIResponse, error, int) {
 	// Geo APIにリクエスト
 	url := "https://geoapi.heartrails.com/api/json?method=searchByPostal&postal=" + postalCode
 	resp, err := http.Get(url)
-	if err != nil {
+	if err != nil || resp.StatusCode != http.StatusOK {
 		return geoData, err, resp.StatusCode
 	}
 	defer resp.Body.Close()
@@ -149,12 +150,28 @@ func fetchGeoData(postalCode string) (GeoAPIResponse, error, int) {
 	return geoData, nil, http.StatusOK
 }
 
+func getPostalCode(r *http.Request) (string, error) {
+	postalCode := r.FormValue("postal_code")
+
+	if len(postalCode) != 7 {
+		return "", fmt.Errorf("postal_code is invalid")
+	} else if _, err := strconv.Atoi(postalCode); err != nil {
+		return "", fmt.Errorf("postal_code is invalid")
+	}
+	return postalCode, nil
+}
+
 func AddressHandler(w http.ResponseWriter, r *http.Request) {
-	postalCode := r.FormValue("postal_code") // formの例外処理はgeoAPIに任せる
+	// リクエストパラメータから郵便番号を取得
+	postalCode, err := getPostalCode(r)
+	if err != nil {
+		view.ErrorResponse(w, err, http.StatusBadRequest)
+		return
+	}
 
 	// Geo APIからデータを取得し、goオブジェクトにして格納
 	geoData, err, statusCode := fetchGeoData(postalCode)
-	if err != nil {
+	if err != nil || statusCode != http.StatusOK {
 		view.ErrorResponse(w, err, statusCode)
 		return
 	}
